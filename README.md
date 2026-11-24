@@ -96,7 +96,7 @@ A third sheet, called "e", combines the movements of both basic clock sheets. It
 
 The first 3D-printed version implements the original counter from the Z1 patent as shown in the simulator, and the parts are printed in the same colors as in the simulation.
 
-<video controls src="https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/first_version.mp4" title="first version"></video>"></video>
+<video controls src="https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/first_version.mp4" title="first version"></video></video>
 
 It worked as expected, but the output is only visible during phases I and II. To hold it longer, an output register has to be added.
 
@@ -123,12 +123,12 @@ FreeCAD's Assembly workbench joints cannot represent pins sliding in cut-outs, s
 
 To use it: run the macro, press **Recompute**, then press **Start**. To repeat the simulation, press **Start** again.
 
-<video controls src="https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/macro_execution.mp4" title="docs/assets/counter/macro_execution.mp4"></video>"></video>
+<video controls src="https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/macro_execution.mp4" title="docs/assets/counter/macro_execution.mp4"></video></video>
 
 
 And finally, the 3D-printed version in action:
 
-<video controls src="https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/counter_final.mp4" title="docs/assets/counter/counter_final.mp4"></video>"></video>
+<video controls src="docs/assets/counter/counter_final.mp4" title="docs/assets/counter/counter_final.mp4"></video></video>
 
 
 ## 4-bit adder
