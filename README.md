@@ -30,9 +30,9 @@ Some good starting points:
 
 - Videos: [Konrad Zuse's Z1](https://www.youtube.com/watch?v=HDxs3-aJSAI) and [Zuse Z1 Simulation Demo](https://www.youtube.com/watch?v=Q4zH0n5iPxw&t=1s)
 - Paper: [The Z1: Architecture and Algorithms of Konrad Zuse's First Computer](https://arxiv.org/pdf/1406.1886v3)
-- Websites: [Z1 Computer](https://en.wikipedia.org/wiki/Z1_(computer)),  [Konrad Zuse](https://en.wikipedia.org/wiki/Konrad_Zuse),  [Architecture and Simulation of the Z1 Computer](https://zuse-z1.zib.de/)
+- Website: [Architecture and Simulation of the Z1 Computer](https://zuse-z1.zib.de/)
 
-That last website also offers a simulator for small parts of the Z1. Two of its examples, a 4-bit counter and a 4-bit adder, got me thinking about 3D-printed versions.
+That website also offers a simulator for small parts of the Z1. Two of its examples, a 4-bit counter and a 4-bit adder, got me thinking about 3D-printed versions.
 
 ## 4-bit counter
 
@@ -42,9 +42,9 @@ That last website also offers a simulator for small parts of the Z1. Two of its 
 
 The screenshot shows the simulator with the counter example loaded. It looks simple enough to turn into a design for 3D printing: there are only a few parts to extract, and the simulation shows how they have to move.
 
-<video controls src="docs/assets/counter/counter_sim_2.mp4"></video>
+<video controls src="<video controls src="https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/counter_sim_2.mp4" title="docs/assets/counter/counter_sim_2.mp4"></video>"></video>
 
-[Video: counter simulation](docs/assets/counter/counter_sim_2.mp4)
+[Video: counter simulation](https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/counter_sim_2.mp4)
 
 The video shows the four phases of each clock cycle and the binary output of the counter. It also shows that two kinds of pins are used: **movable pins** that sit in cut-outs of the sheets and realize the logic functions, and **fixed pins** that only guide the sheets.
 
@@ -96,9 +96,9 @@ A third sheet, called "e", combines the movements of both basic clock sheets. It
 
 The first 3D-printed version implements the original counter from the Z1 patent as shown in the simulator, and the parts are printed in the same colors as in the simulation.
 
-<video controls src="docs/assets/counter/first_version.mp4"></video>
+<video controls src="<video controls src="https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/first_version.mp4" title="docs/assets/counter/first_version.mp4"></video>"></video>
 
-[Video: first printed version](docs/assets/counter/first_version.mp4)
+[Video: first printed version](https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/first_version.mp4)
 
 It worked as expected, but the output is only visible during phases I and II. To hold it longer, an output register has to be added.
 
@@ -116,9 +116,9 @@ The movement from the pulse groove turns a lever. The lever moves the register p
 
 The video shows the final assembly from bottom to top.
 
-<video controls src="docs/assets/counter/counter_assy.mp4"></video>
+<video controls src="<video controls src="https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/counter_assy.mp4" title="docs/assets/counter/counter_assy.mp4"></video>"></video>
 
-[Video: assembly from bottom to top](docs/assets/counter/counter_assy.mp4)
+[Video: assembly from bottom to top](https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/counter_assy.mp4)
 
 ### Simulating the assembly in FreeCAD
 
@@ -126,15 +126,15 @@ FreeCAD's Assembly workbench joints cannot represent pins sliding in cut-outs, s
 
 To use it: run the macro, press **Recompute**, then press **Start**. To repeat the simulation, press **Start** again.
 
-<video controls src="docs/assets/counter/macro_execution.mp4"></video>
+<video controls src="<video controls src="https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/macro_execution.mp4" title="docs/assets/counter/macro_execution.mp4"></video>"></video>
 
-[Video: running the macro](docs/assets/counter/macro_execution.mp4)
+[Video: running the macro](https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/macro_execution.mp4)
 
 And finally, the 3D-printed version in action:
 
-<video controls src="docs/assets/counter/counter_final.mp4"></video>
+<video controls src="<video controls src="https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/counter_final.mp4" title="docs/assets/counter/counter_final.mp4"></video>"></video>
 
-[Video: the printed counter](docs/assets/counter/counter_final.mp4)
+[Video: the printed counter](https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/counter_final.mp4)
 
 ## 4-bit adder
 
