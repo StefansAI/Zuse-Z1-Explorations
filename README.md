@@ -42,9 +42,9 @@ That website also offers a simulator for small parts of the Z1. Two of its examp
 
 The screenshot shows the simulator with the counter example loaded. It looks simple enough to turn into a design for 3D printing: there are only a few parts to extract, and the simulation shows how they have to move.
 
-<video controls> 
-<source src="https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/counter_sim_2.mp4" type "video/mp4">
-</video>
+<p align="center">
+  <img src="docs/assets/counter/counter_sim_2.gif" alt="The counter example in the Z1 simulator" width="700" />
+</p>
 
 The video shows the four phases of each clock cycle and the binary output of the counter. It also shows that two kinds of pins are used: **movable pins** that sit in cut-outs of the sheets and realize the logic functions, and **fixed pins** that only guide the sheets.
 
@@ -96,7 +96,9 @@ A third sheet, called "e", combines the movements of both basic clock sheets. It
 
 The first 3D-printed version implements the original counter from the Z1 patent as shown in the simulator, and the parts are printed in the same colors as in the simulation.
 
-<video controls src="https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/first_version.mp4" title="first version"></video></video>
+<p align="center">
+  <img src="docs/assets/counter/first_version.gif" alt="First 3D printed version" width="700" />
+</p>
 
 It worked as expected, but the output is only visible during phases I and II. To hold it longer, an output register has to be added.
 
@@ -114,8 +116,9 @@ The movement from the pulse groove turns a lever. The lever moves the register p
 
 The video shows the final assembly from bottom to top.
 
-[![Counter Assembly](docs/assets/counter/counter_design.png)](https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/counter_assy.mp4)
-
+<p align="center">
+  <img src="docs/assets/counter/counter_assy.gif" alt="Counter Assembly" width="600" />
+</p>
 
 ### Simulating the assembly in FreeCAD
 
@@ -123,10 +126,15 @@ FreeCAD's Assembly workbench joints cannot represent pins sliding in cut-outs, s
 
 To use it: run the macro, press **Recompute**, then press **Start**. To repeat the simulation, press **Start** again.
 
-[![Macro Execution](docs/assets/counter_design.png)](https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/macro_execution.mp4)
+<p align="center">
+  <img src="docs/assets/counter/macro_execution.gif" alt="Macro Execution" width="600" />
+</p>
 
 And finally, the 3D-printed version in action:
-[![Final Version](docs/assets/counter_design.png)](https://github.com/StefansAI/Zuse-Z1-Explorations/tree/da5693337ff4b093edc8c668bb88d79c9fc8a2fc/docs/assets/counter/counter_final.mp4)
+
+<p align="center">
+  <img src="docs/assets/counter/counter_final.gif" alt="Final 3D printed version" width="600" />
+</p>
 
 ## 4-bit adder
 
