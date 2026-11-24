@@ -1,0 +1,923 @@
+# -*- coding: utf-8 -*-
+# Z1 4-bit counter pin-in-slot simulator, macro v4 (FreeCAD 1.1) with control panel
+#
+# What it does
+#   * reads z1_counter_geometry.json (sheet outlines + pin circles taken from YOUR counter parts file)
+#   * simulates N clock cycles (phases I, register pulse, II, III, IV) with a contact solver and replays
+#     the motion in the 3D view by changing the Placement of the objects in your open counter assembly
+#   * the count is read from flag_1 .. flag_4 (flag at Y0 = about -6 mm in Y = logic 1; flag_1 = bit 0)
+#
+# How to use
+#   1. Open a COPY of counter_assy.FCStd (do not save it afterwards).
+#   2. Put z1_counter_geometry.json next to this macro (or set DATA_FILE).
+#   3. Macro > Macros... > z1_counter_v4 > Execute.  A panel opens on the right side of FreeCAD with the number
+#      of cycles and the buttons "Start / Repeat", "Stop" and "Reset".  The first Start computes the cycles
+#      (about 1.5 minutes for 17 cycles, with a progress bar), later Starts replay the stored motion at once.
+#      "Recompute" forces a new simulation.  Console: z1_counter_panel(), run_counter(17), reset().
+#
+# Wheel-driven animation (v3): the wheel turns at constant speed (WHEEL_STEP degrees per frame, counterclockwise).
+#   The "cam" section of the geometry file says at which wheel angle each motion happens:
+#   I-III moves in 21-70 deg (phase I) and 207-254 deg (III), II-IV in 120-160 deg (II) and 297-344 deg (IV),
+#   the register pulse (reg_clk_1/2, rockers, reg_lever) in 70-120 deg.  The cam was derived from the groove
+#   of your 'wheel2' part; the contact solver gives the exact positions, the cam gives the timing.
+#   The pulse moves reg_clk_1 by +6 mm and reg_clk_2 by -6 mm in Y (and back).  reg_lever and the two
+#   reg_rocker parts are only turned for the 3D view: rockers 41 degrees about their pivots, the lever 4.36
+#   degrees about its boss at (92, -110) (pivot position is an assumption).
+# Not modeled: tilts of about 3 degrees in some placements.
+#
+# NOTE: the physics core was tested outside FreeCAD on the same geometry file.  The FreeCAD part
+# (placements, joints) was only tested against stand-ins, not the real thing.
+
+import json
+import os
+import time
+
+import numpy as np
+
+try:
+    import FreeCAD as App
+    import FreeCADGui as Gui
+except Exception:                      # allows running the solver outside FreeCAD
+    App = None
+    Gui = None
+
+# ----------------------------- SETTINGS -------------------------------------
+CYCLES = 17                # wheel turns to run (turn k ends with count k-1; turn 17 arrives at 0 again)
+DATA_FILE = ""             # "" = look next to the macro, then in your home folder
+ANIMATE = True             # replay the motion in the 3D view
+WHEEL_STEP = 3.0           # degrees of constant wheel rotation per animation frame
+FRAME_DELAY = 0.03         # seconds between replayed frames
+SUPPRESS_JOINTS = True     # joints would pull the parts back to their joint positions
+AUTORUN = False            # True = run once without the panel
+OPEN_PANEL = True          # open the control panel when the macro starts
+PANEL_WIDTH = 380          # panel width in pixels
+SHOW_WHEEL = True          # turn the part 'wheel' with the cycle
+WHEEL_CCW = True           # False = turn the wheel clockwise instead
+SHOW_REGISTER = True       # turn reg_rocker_1/2 and reg_lever during the register pulse
+# ----------------------------------------------------------------------------
+
+TOL = 1e-3            # accepted penetration, mm
+STEP = 0.5            # mm per sub-step while a clock sheet moves
+TRAVEL = 6.5          # max travel used to cull far-away pairs
+MARGIN = 1.5          # active-set margin
+# (name, axis, signed travel): I-III -X, II-IV -Y, I-III +X, II-IV +Y
+PHASES = [("I", "x", -6.0), ("II", "y", -6.0), ("III", "x", +6.0), ("IV", "y", +6.0)]
+DWELL_FRAMES = 4
+PULSE_STEPS = 12
+FLAG_LABELS = ["flag_1", "flag_2", "flag_3", "flag_4"]       # bit 0 .. bit 3
+CLK_LABELS = ("reg_clk_1", "reg_clk_2")                      # +6 mm / -6 mm in Y during the pulse
+SLOT = {"I": 0, "pulse": 1, "II": 2, "dwell2": 3, "III": 4, "dwell3": 5, "IV": 6, "dwell4": 7}   # eighths of a turn
+
+
+def log(msg):
+    text = str(msg)
+    if App is not None:
+        App.Console.PrintMessage(text + "\n")
+    print(text)
+
+
+# ------------------------------ data model ----------------------------------
+class Plate(object):
+    kind = "plate"
+
+    def __init__(self, d):
+        self.label, self.mode, self.name = d["label"], d["mode"], d["name"]
+        self.base = d["base"]
+        self.layers = [(L["z0"], L["z1"], np.array(L["segs"], dtype=float).reshape(-1, 4)) for L in d["layers"]]
+        self.fused = [tuple(f) for f in d["fused"]]
+        self.cyls = []
+        self.attached = []      # (label, FreeCAD name, base, selector dx) of parts that ride on this plate
+
+    @property
+    def movable(self):
+        if self.mode in ("fixed", "driver_x", "driver_y"):
+            return (False, False)
+        return ("x" in self.mode, "y" in self.mode)
+
+
+class Pin(object):
+    kind = "pin"
+
+    def __init__(self, d):
+        self.label, self.mode, self.name = d["label"], d["mode"], d["name"]
+        self.base = d["base"]
+        self.cyls = [tuple(c) for c in d["cyls"]]
+        self.layers, self.fused = [], []
+        self.attached = []
+
+    @property
+    def movable(self):
+        if self.mode == "fixed":
+            return (False, False)
+        return ("x" in self.mode, "y" in self.mode)
+
+
+
+def find_data_file():
+    cands = []
+    if DATA_FILE:
+        cands.append(os.path.expanduser(DATA_FILE))
+    here = os.path.dirname(os.path.abspath(globals().get("__file__", ""))) if "__file__" in globals() else ""
+    if App is not None:
+        cands.append(os.path.join(App.getUserMacroDir(True), "z1_counter_geometry.json"))
+    cands += [os.path.join(here, "z1_counter_geometry.json"), os.path.expanduser("~/z1_counter_geometry.json"),
+              os.path.join(os.getcwd(), "z1_counter_geometry.json")]
+    for c in cands:
+        if c and os.path.isfile(c):
+            return c
+    raise IOError("z1_counter_geometry.json not found. Looked in: " + ", ".join(c for c in cands if c))
+
+
+_DATA = {}
+
+
+def load_data(path=None):
+    path = path or find_data_file()
+    with open(path) as fh:
+        d = json.load(fh)
+    plates = {p["label"]: Plate(p) for p in d["plates"]}
+    pins = {p["label"]: Pin(p) for p in d["pins"]}
+    _DATA.clear()
+    _DATA.update(d.get("anim", {}))
+    if d.get("cam"):
+        _DATA["cam"] = d["cam"]
+    log("counter macro v4; geometry %s; loaded %s: %d sheets, %d pins" % (d.get("version", "?"), path, len(plates), len(pins)))
+    return plates, pins
+
+
+# ------------------------------- solver -------------------------------------
+class World(object):
+    """Quasi-static contact solver (vectorised, numpy only)."""
+
+    def __init__(self, plates, pins):
+        self.bodies = list(plates.values()) + list(pins.values())
+        self.index = {b.label: i for i, b in enumerate(self.bodies)}
+        nb = len(self.bodies)
+        self.OFF = np.zeros((nb, 2))
+        self.MV = np.zeros((nb, 2), bool)
+        self.driver_axis = {}
+        self.attached = []      # parts that simply ride on another plate: (label, name, base, dx, parent index)
+        self.sel_x6 = False
+        for i, b in enumerate(self.bodies):
+            for lab, nm, base, dx in b.attached:
+                self.attached.append((lab, nm, base, dx, i))
+                self.sel_x6 = self.sel_x6 or dx > 0.5
+            self.MV[i] = b.movable
+            if b.mode in ("driver_x", "driver_y"):
+                self.driver_axis[i] = 0 if b.mode == "driver_x" else 1
+        self._build_pairs(plates, pins)
+
+    def _build_pairs(self, plates, pins, zov=0.2):
+        cyls = []
+        for pn in pins.values():
+            for c in pn.cyls:
+                cyls.append((pn, c))
+        for pl in plates.values():
+            for c in pl.fused:
+                cyls.append((pl, c))
+        pin_i, plate_i, c0s, rs, segl, names = [], [], [], [], [], []
+        for owner, (z0, z1, r, cx, cy) in cyls:
+            oi = self.index[owner.label]
+            c0 = np.array([cx, cy])
+            ownmov = self.MV[oi].copy()
+            if oi in self.driver_axis:
+                ownmov[self.driver_axis[oi]] = True
+            for pl in plates.values():
+                if pl is owner:
+                    continue
+                pi = self.index[pl.label]
+                plmov = self.MV[pi].copy()
+                if pi in self.driver_axis:
+                    plmov[self.driver_axis[pi]] = True
+                bx = TRAVEL * (int(ownmov[0]) + int(plmov[0]))
+                by = TRAVEL * (int(ownmov[1]) + int(plmov[1]))
+                if bx == 0 and by == 0:
+                    continue
+                for (lz0, lz1, s) in pl.layers:
+                    if min(z1, lz1) - max(z0, lz0) < zov:
+                        continue
+                    xmin = np.minimum(s[:, 0], s[:, 2]); xmax = np.maximum(s[:, 0], s[:, 2])
+                    ymin = np.minimum(s[:, 1], s[:, 3]); ymax = np.maximum(s[:, 1], s[:, 3])
+                    wx0, wx1 = c0[0] - (r + MARGIN + bx), c0[0] + (r + MARGIN + bx)
+                    wy0, wy1 = c0[1] - (r + MARGIN + by), c0[1] + (r + MARGIN + by)
+                    keep = (xmax >= wx0) & (xmin <= wx1) & (ymax >= wy0) & (ymin <= wy1)
+                    if not keep.any():
+                        continue
+                    pin_i.append(oi); plate_i.append(pi); c0s.append(c0); rs.append(r)
+                    segl.append(s[keep])
+                    names.append("%s(r%g) vs %s@z%.1f" % (owner.label, r, pl.label, lz0))
+        P = len(pin_i)
+        S = max(len(s) for s in segl)
+        segs = np.full((P, S, 4), 1e6)
+        for k, s in enumerate(segl):
+            segs[k, :len(s)] = s
+        self.pin_i = np.array(pin_i); self.plate_i = np.array(plate_i)
+        self.c0 = np.array(c0s); self.r = np.array(rs); self.segs = segs; self.names = names
+        self.P, self.S = P, S
+
+    def nearest(self, idx):
+        segs = self.segs[idx]
+        p = self.c0[idx] + self.OFF[self.pin_i[idx]] - self.OFF[self.plate_i[idx]]
+        a = segs[:, :, 0:2]; b = segs[:, :, 2:4]
+        ab = b - a
+        den = np.einsum("psk,psk->ps", ab, ab)
+        den = np.where(den < 1e-18, 1e-18, den)
+        ap = p[:, None, :] - a
+        t = np.clip(np.einsum("psk,psk->ps", ap, ab) / den, 0.0, 1.0)
+        q = a + ab * t[:, :, None]
+        dv = q - p[:, None, :]
+        d2 = np.einsum("psk,psk->ps", dv, dv)
+        k = np.argmin(d2, axis=1)
+        ar = np.arange(len(idx))
+        return np.sqrt(d2[ar, k]), dv[ar, k], p
+
+    def penetration_all(self):
+        d, dv, p = self.nearest(np.arange(self.P))
+        return np.maximum(0.0, self.r - d)
+
+    def solve(self, maxit=3000, omega=1.0):
+        d, dv, p = self.nearest(np.arange(self.P))
+        active = np.nonzero(d - self.r < MARGIN)[0]
+        bad = np.array([], int)
+        for rounds in range(6):
+            worst, stuck = self._relax(active, maxit, omega)
+            pen = self.penetration_all()
+            bad = np.nonzero(pen > TOL * 2)[0]
+            if len(bad) == 0:
+                return True, None
+            newact = np.union1d(active, bad)
+            if len(newact) == len(active) and worst > TOL * 2:
+                return False, bad[np.argmax(pen[bad])]
+            active = newact
+        return False, bad[np.argmax(pen[bad])]
+
+    def _relax(self, active, maxit, omega):
+        pin_i, plate_i = self.pin_i[active], self.plate_i[active]
+        MVp, MVq = self.MV[pin_i], self.MV[plate_i]
+        nm = MVp.astype(int) + MVq.astype(int)
+        worst = 0.0
+        for it in range(maxit):
+            d, dv, p = self.nearest(active)
+            pen = self.r[active] - d
+            hit = pen > TOL
+            if not hit.any():
+                return 0.0, None
+            worst = pen[hit].max()
+            u = dv[hit] / np.maximum(d[hit], 1e-9)[:, None]
+            corr = -u * pen[hit][:, None]
+            h = np.nonzero(hit)[0]
+            acc = np.zeros_like(self.OFF)
+            cnt = np.zeros_like(self.OFF)
+            for ax in (0, 1):
+                n = nm[h, ax]
+                ok = n > 0
+                share = np.where(ok, corr[:, ax] / np.maximum(n, 1), 0.0)
+                mp = MVp[h, ax] & ok
+                mq = MVq[h, ax] & ok
+                np.add.at(acc[:, ax], pin_i[h][mp], share[mp])
+                np.add.at(cnt[:, ax], pin_i[h][mp], 1.0)
+                np.add.at(acc[:, ax], plate_i[h][mq], -share[mq])
+                np.add.at(cnt[:, ax], plate_i[h][mq], 1.0)
+            self.OFF += omega * acc / np.maximum(cnt, 1.0)
+        return worst, None
+
+    def run_phase(self, axis, delta, on_step=None, extra=()):
+        """extra: list of (body index, target offset) driven by hand together with the clock sheet
+        (the carry-in pin: it moves from wherever it is to the target in the same number of sub-steps)."""
+        a = 0 if axis == "x" else 1
+        drv = [i for i, ax in self.driver_axis.items() if ax == a]
+        n = max(1, int(round(abs(delta) / STEP)))
+        ex = [i for i, t in extra]
+        per = [(t - self.OFF[i, a]) / n for i, t in extra]
+        saved = [self.MV[i].copy() for i in ex]
+        for i in ex:
+            self.MV[i] = False
+        try:
+            for s in range(n):
+                for i in drv:
+                    self.OFF[i, a] += delta / n
+                for i, dstep in zip(ex, per):
+                    self.OFF[i, a] += dstep
+                ok, bad = self.solve()
+                if on_step:
+                    on_step(s, n, ok)
+                if not ok:
+                    return False, self.names[bad], s
+            return True, None, n
+        finally:
+            for i, m in zip(ex, saved):
+                self.MV[i] = m
+
+
+class FastWorld(World):
+    """Same solver, faster relaxation (cropped segments, over-relaxation)."""
+    CROP = 1.2
+    OMEGA = 1.5
+
+    def nearest_s(self, idx, segs):
+        p = self.c0[idx] + self.OFF[self.pin_i[idx]] - self.OFF[self.plate_i[idx]]
+        a = segs[:, :, 0:2]
+        b = segs[:, :, 2:4]
+        ab = b - a
+        den = np.einsum("psk,psk->ps", ab, ab)
+        den = np.where(den < 1e-18, 1e-18, den)
+        ap = p[:, None, :] - a
+        t = np.clip(np.einsum("psk,psk->ps", ap, ab) / den, 0.0, 1.0)
+        q = a + ab * t[:, :, None]
+        dv = q - p[:, None, :]
+        d2 = np.einsum("psk,psk->ps", dv, dv)
+        k = np.argmin(d2, axis=1)
+        ar = np.arange(len(idx))
+        return np.sqrt(d2[ar, k]), dv[ar, k], p
+
+    def crop(self, active):
+        segs = self.segs[active]
+        p = self.c0[active] + self.OFF[self.pin_i[active]] - self.OFF[self.plate_i[active]]
+        W = (self.r[active] + MARGIN + self.CROP)[:, None]
+        xmin = np.minimum(segs[:, :, 0], segs[:, :, 2])
+        xmax = np.maximum(segs[:, :, 0], segs[:, :, 2])
+        ymin = np.minimum(segs[:, :, 1], segs[:, :, 3])
+        ymax = np.maximum(segs[:, :, 1], segs[:, :, 3])
+        m = (xmax >= p[:, 0:1] - W) & (xmin <= p[:, 0:1] + W) & (ymax >= p[:, 1:2] - W) & (ymin <= p[:, 1:2] + W)
+        n = max(1, int(m.sum(axis=1).max()))
+        order = np.argsort(~m, axis=1, kind="stable")[:, :n]
+        out = np.take_along_axis(segs, order[:, :, None], axis=1)
+        mm = np.take_along_axis(m, order, axis=1)
+        return np.where(mm[:, :, None], out, 1e6)
+
+    def _relax(self, active, maxit, omega):
+        pin_i, plate_i = self.pin_i[active], self.plate_i[active]
+        MVp, MVq = self.MV[pin_i], self.MV[plate_i]
+        nm = MVp.astype(int) + MVq.astype(int)
+        segs = self.crop(active)
+        worst = 0.0
+        for it in range(maxit):
+            d, dv, p = self.nearest_s(active, segs)
+            pen = self.r[active] - d
+            hit = pen > TOL
+            if not hit.any():
+                return 0.0, None
+            worst = pen[hit].max()
+            u = dv[hit] / np.maximum(d[hit], 1e-9)[:, None]
+            corr = -u * pen[hit][:, None]
+            h = np.nonzero(hit)[0]
+            acc = np.zeros_like(self.OFF)
+            cnt = np.zeros_like(self.OFF)
+            for ax in (0, 1):
+                n = nm[h, ax]
+                ok = n > 0
+                share = np.where(ok, corr[:, ax] / np.maximum(n, 1), 0.0)
+                mp = MVp[h, ax] & ok
+                mq = MVq[h, ax] & ok
+                nb = len(acc)
+                acc[:, ax] += (np.bincount(pin_i[h][mp], weights=share[mp], minlength=nb)
+                               - np.bincount(plate_i[h][mq], weights=share[mq], minlength=nb))
+                cnt[:, ax] += np.bincount(pin_i[h][mp], minlength=nb) + np.bincount(plate_i[h][mq], minlength=nb)
+            self.OFF += self.OMEGA * acc / np.maximum(cnt, 1.0)
+        return worst, None
+
+
+
+
+# ----------------------------- scenario runner -------------------------------
+def get_world():
+    plates, pins = load_data()
+    return FastWorld(plates, pins)
+
+
+def count_of(w):
+    """Count from the flags: Y0 (about -6 mm) = 1; flag_1 = bit 0.  Returns (value, offsets)."""
+    v, offs = 0, []
+    for k, lab in enumerate(FLAG_LABELS):
+        y = float(w.OFF[w.index[lab], 1])
+        offs.append(round(y, 2))
+        if y < -3.0:
+            v |= 1 << k
+    return v, offs
+
+
+def _drive_y(w, targets, n, on_step):
+    """Move bodies by hand in Y (label -> target offset), everything else follows by contact."""
+    idx = {w.index[k]: t for k, t in targets.items()}
+    saved = {i: w.MV[i].copy() for i in idx}
+    start = {i: float(w.OFF[i, 1]) for i in idx}
+    for i in idx:
+        w.MV[i] = False
+    try:
+        for s in range(1, n + 1):
+            for i, t in idx.items():
+                w.OFF[i, 1] = start[i] + (t - start[i]) * s / n
+            ok, bad = w.solve()
+            if on_step:
+                on_step(s, n, ok)
+            if not ok:
+                return False, w.names[bad]
+    finally:
+        for i, m in saved.items():
+            w.MV[i] = m
+    return True, None
+
+
+class _Abort(Exception):
+    pass
+
+
+# ----------------------------- wheel cam ------------------------------------
+# The wheel turns at constant speed.  The cam tables in the data file give, for each motion segment of
+# one turn, the wheel angle (degrees, counter-clockwise) and the progress 0..1 of that motion.
+# The contact solver supplies the exact positions for progress 0..1, the cam decides when they are reached.
+SEGMENT_ORDER = ["I", "out", "back", "II", "III", "IV"]
+DEFAULT_CAM = {   # used only if the data file has no "cam" section
+    "I": [[21, 0], [70.5, 1]], "out": [[70.5, 0], [92.5, 1]], "back": [[97.5, 0], [120, 1]],
+    "II": [[120, 0], [160.5, 1]], "III": [[207, 0], [254.5, 1]], "IV": [[297, 0], [344.5, 1]]}
+
+
+def get_cam():
+    """Cam tables, each clipped so a segment never starts before the previous one has ended."""
+    raw = _DATA.get("cam") or DEFAULT_CAM
+    cam, lo = {}, 0.0
+    for name in SEGMENT_ORDER:
+        t = np.array([p[0] for p in raw[name]], float)
+        f = np.array([p[1] for p in raw[name]], float)
+        if t[0] < lo:                                  # cut the part that overlaps the previous segment
+            f0 = np.interp(lo, t, f)
+            keep = t > lo
+            t = np.concatenate([[lo], t[keep]])
+            f = np.concatenate([[f0], f[keep]])
+            f = (f - f[0]) / max(1e-9, f[-1] - f[0])
+        cam[name] = (t, f)
+        lo = t[-1]
+    return cam
+
+
+def _count_from(w, off):
+    v = 0
+    for k, lab in enumerate(FLAG_LABELS):
+        if float(off[w.index[lab], 1]) < -3.0:
+            v |= 1 << k
+    return v
+
+
+def _lerp_state(states, f):
+    """Interpolate between the solved states of one segment (states[0] = start, states[-1] = end)."""
+    x = min(max(f, 0.0), 1.0) * (len(states) - 1)
+    i = min(int(x), len(states) - 2)
+    u = x - i
+    return states[i] * (1.0 - u) + states[i + 1] * u
+
+
+def build_frames(w, cycles_data):
+    """cycles_data: list of (start_state, {segment: [states]}).  Constant wheel speed -> list of frames."""
+    cam = get_cam()
+    frames = []
+    hold = None
+    nstep = max(1, int(round(360.0 / WHEEL_STEP)))
+    for c, (st0, segs) in enumerate(cycles_data, 1):
+        hold = st0
+        order = [n for n in SEGMENT_ORDER if n in segs]
+        for k in range(1, nstep + 1):
+            th = 360.0 * k / nstep
+            state = hold
+            reg = 0.0
+            for name in order:
+                t, f = cam[name]
+                st = segs[name]
+                if th >= t[-1]:
+                    state = st[-1]
+                elif th > t[0]:
+                    state = _lerp_state(st, float(np.interp(th, t, f)))
+            if "out" in segs:
+                fo = float(np.interp(th, *cam["out"]))
+                fb = float(np.interp(th, *cam["back"])) if "back" in segs else 0.0
+                reg = fo - fb
+            frames.append(("cycle %d wheel %5.1f deg" % (c, th), state.copy(),
+                           {"wheel": 360.0 * (c - 1) + th, "reg": reg, "count": _count_from(w, state)}))
+        # end of cycle: the state after the last segment
+        hold = segs[order[-1]][-1] if order else hold
+    return frames
+
+
+def run_counter(cycles=None, progress=None, hook=None):
+    """Simulate `cycles` clock cycles.  Returns (world, frames, counts).
+    frames: list of (text, offsets, anim), one per WHEEL_STEP degrees of constant wheel rotation,
+    anim = {"wheel": degrees, "reg": 0..1, "count": n}."""
+    cycles = cycles or CYCLES
+    w = get_world()
+    counts, data = [], []
+    n_solved = [0]
+
+    def rec(lst, text):
+        def step(s, n, ok):
+            lst.append(w.OFF.copy())
+            n_solved[0] += 1
+            if hook is not None and hook(n_solved[0], text, count_of(w)[0]) is False:
+                raise _Abort()
+        return step
+
+    try:
+        for c in range(1, cycles + 1):
+            st0 = w.OFF.copy()
+            segs = {}
+            for name, ax, dl in PHASES:
+                lst = [w.OFF.copy()]
+                ok, bad, n = w.run_phase(ax, dl, on_step=rec(lst, "cycle %d phase %s" % (c, name)))
+                if not ok:
+                    log("JAM in cycle %d phase %s: %s" % (c, name, bad))
+                    return w, build_frames(w, data), counts
+                segs[name] = lst
+                if name == "I":                       # register pulse between phase I and II
+                    for key, (t1, t2) in (("out", (6.0, -6.0)), ("back", (0.0, 0.0))):
+                        lst2 = [w.OFF.copy()]
+                        ok2, bad2 = _drive_y(w, {CLK_LABELS[0]: t1, CLK_LABELS[1]: t2}, PULSE_STEPS,
+                                             rec(lst2, "cycle %d register pulse %s" % (c, key)))
+                        if not ok2:
+                            log("JAM in cycle %d register pulse: %s" % (c, bad2))
+                            return w, build_frames(w, data), counts
+                        segs[key] = lst2
+            data.append((st0, segs))
+            v, offs = count_of(w)
+            counts.append(v)
+            log("cycle %d done: count = %d (flag offsets %s)" % (c, v, offs))
+            if progress:
+                progress(c, cycles)
+    except _Abort:
+        log("stopped by user")
+        return w, [], counts
+    return w, build_frames(w, data), counts
+
+
+# --------------------------- FreeCAD side (placements) -----------------------
+def _doc():
+    if App is None or App.ActiveDocument is None:
+        raise RuntimeError("Open a COPY of your counter_assy.FCStd first.")
+    return App.ActiveDocument
+
+
+def suppress_joints(doc, flag=True):
+    n = 0
+    for o in doc.Objects:
+        if hasattr(o, "JointType") and hasattr(o, "Suppressed"):
+            try:
+                o.Suppressed = flag
+                n += 1
+            except Exception:
+                pass
+    log("%s %d joints" % ("suppressed" if flag else "re-enabled", n))
+    return n
+
+
+def _base_of(obj):
+    """Original placement of an animated object, remembered in a dynamic property so a re-run never starts turned."""
+    try:
+        if "Z1Base" not in obj.PropertiesList:
+            obj.addProperty("App::PropertyPlacement", "Z1Base", "Z1", "original placement")
+            obj.Z1Base = App.Placement(obj.Placement.Base, obj.Placement.Rotation)
+        return App.Placement(obj.Z1Base.Base, obj.Z1Base.Rotation)
+    except Exception:
+        return App.Placement(obj.Placement.Base, obj.Placement.Rotation)
+
+
+def _turn(obj, base, pivot, deg):
+    if abs(deg) < 1e-9:
+        obj.Placement = base
+        return
+    rot = App.Placement(App.Vector(0, 0, 0), App.Rotation(App.Vector(0, 0, 1), deg),
+                        App.Vector(pivot[0], pivot[1], 0))
+    obj.Placement = rot.multiply(base)
+
+
+def apply_anim(doc, anim):
+    if App is None:
+        return
+    try:
+        if SHOW_WHEEL and "wheel" in _DATA:
+            o = doc.getObject(_DATA["wheel"]["name"])
+            if o is not None:
+                a = anim["wheel"] if WHEEL_CCW else -anim["wheel"]
+                _turn(o, _base_of(o), _DATA["wheel"]["center"], a)
+        if SHOW_REGISTER:
+            s = anim["reg"]
+            for r in _DATA.get("rockers", []):
+                o = doc.getObject(r["name"])
+                if o is not None:
+                    _turn(o, _base_of(o), r["pivot"], r["angle"] * s)
+            lv = _DATA.get("lever")
+            if lv:
+                o = doc.getObject(lv["name"])
+                if o is not None:
+                    _turn(o, _base_of(o), lv["pivot"], lv["angle"] * s)
+    except Exception as e:
+        log("animation: %s" % e)
+
+
+def apply_offsets(doc, w, off, missing=None):
+    for i, b in enumerate(w.bodies):
+        if b.mode == "fixed":
+            continue
+        obj = doc.getObject(b.name)
+        if obj is None:
+            if missing is not None:
+                missing.add(b.label)
+            continue
+        dx, dy = off[i]
+        obj.Placement = App.Placement(App.Vector(b.base[0] + dx, b.base[1] + dy, b.base[2]), obj.Placement.Rotation)
+
+
+def replay(w, frames, delay=FRAME_DELAY):
+    doc = _doc()
+    missing = set()
+    for text, off, anim in frames:
+        apply_offsets(doc, w, off, missing)
+        apply_anim(doc, anim)
+        if Gui is not None:
+            try:
+                Gui.updateGui()
+            except Exception:
+                pass
+        time.sleep(delay)
+    if missing:
+        log("objects not found in the document (skipped): %s" % ", ".join(sorted(missing)))
+
+
+_LAST = {}
+
+
+def reset():
+    """Put every simulated object back to its start position and re-enable joints."""
+    w = _LAST.get("world") or get_world()
+    doc = _doc()
+    apply_offsets(doc, w, np.zeros_like(w.OFF))
+    apply_anim(doc, {"wheel": 0.0, "reg": 0.0})
+    suppress_joints(doc, False)
+    if Gui is not None:
+        Gui.updateGui()
+
+
+def replay_again():
+    if "frames" not in _LAST:
+        log("nothing computed yet; run run_counter() first")
+        return
+    if SUPPRESS_JOINTS:
+        suppress_joints(_doc(), True)
+    replay(_LAST["world"], _LAST["frames"])
+
+
+def main(cycles=None):
+    w, frames, counts = run_counter(cycles)
+    _LAST.update(world=w, frames=frames, counts=counts)
+    log("RESULT: counts after each cycle: %s" % counts)
+    if ANIMATE and App is not None and App.ActiveDocument is not None:
+        if SUPPRESS_JOINTS:
+            suppress_joints(App.ActiveDocument, True)
+        replay(w, frames)
+    return counts
+
+
+# ------------------------------- control panel ------------------------------
+def _qt():
+    try:
+        from PySide6 import QtWidgets, QtCore
+    except Exception:
+        try:
+            from PySide2 import QtWidgets, QtCore
+        except Exception:
+            from PySide import QtGui as QtWidgets
+            from PySide import QtCore
+    return QtWidgets, QtCore
+
+
+_PANEL = {}
+FRAMES_PER_CYCLE = 80          # only used to scale the progress bar
+
+
+def _cycle_of(text):
+    t = text.split()
+    return int(t[1]) if len(t) > 1 and t[0] == "cycle" else 0
+
+
+class CounterPanel(object):
+    def __init__(self):
+        QtW, QtC = _qt()
+        self.QtW, self.QtC = QtW, QtC
+        self.world = None
+        self.frames, self.computed = [], 0
+        self.play_frames, self.idx = [], 0
+        self.busy = False
+        self.stop_flag = False
+        self.warned = False
+
+        main = Gui.getMainWindow()
+        old = main.findChild(QtW.QDockWidget, "Z1CounterPanel")
+        if old is not None:
+            old.close()
+            old.deleteLater()
+        self.dock = QtW.QDockWidget("Z1 counter simulation", main)
+        self.dock.setObjectName("Z1CounterPanel")
+        body = QtW.QWidget()
+        lay = QtW.QVBoxLayout(body)
+
+        row = QtW.QHBoxLayout()
+        row.addWidget(QtW.QLabel("Cycles:"))
+        self.spin = QtW.QSpinBox()
+        self.spin.setRange(1, 40)
+        self.spin.setValue(CYCLES)
+        self.spin.setToolTip("Cycle k ends with count k-1 (cycle 1 ends with 0); 17 cycles show the wrap to 0")
+        row.addWidget(self.spin)
+        row.addWidget(QtW.QLabel("ms/frame:"))
+        self.spin_ms = QtW.QSpinBox()
+        self.spin_ms.setRange(1, 500)
+        self.spin_ms.setValue(int(FRAME_DELAY * 1000))
+        row.addWidget(self.spin_ms)
+        lay.addLayout(row)
+
+        row = QtW.QHBoxLayout()
+        self.btn_start = QtW.QPushButton("Start / Repeat")
+        self.btn_start.setToolTip("Compute the cycles (first time only) and play them from count 0")
+        self.btn_stop = QtW.QPushButton("Stop")
+        self.btn_reset = QtW.QPushButton("Reset")
+        self.btn_reset.setToolTip("Put every part back to its start position and re-enable the joints")
+        for b in (self.btn_start, self.btn_stop, self.btn_reset):
+            row.addWidget(b)
+        lay.addLayout(row)
+        self.btn_recompute = QtW.QPushButton("Recompute")
+        self.btn_recompute.setToolTip("Throw away the stored motion and simulate again (needed after a new geometry file)")
+        lay.addWidget(self.btn_recompute)
+        self.bar = QtW.QProgressBar()
+        self.bar.setRange(0, 100)
+        lay.addWidget(self.bar)
+        self.lbl_count = QtW.QLabel("count: -")
+        f = self.lbl_count.font()
+        f.setPointSize(f.pointSize() + 6)
+        f.setBold(True)
+        self.lbl_count.setFont(f)
+        lay.addWidget(self.lbl_count)
+        self.lbl_status = QtW.QLabel("ready")
+        self.lbl_status.setWordWrap(True)
+        lay.addWidget(self.lbl_status)
+        self.lbl_result = QtW.QLabel("")
+        self.lbl_result.setWordWrap(True)
+        lay.addWidget(self.lbl_result)
+        lay.addStretch(1)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(3)
+        body.setMinimumWidth(PANEL_WIDTH)
+        body.setMaximumWidth(PANEL_WIDTH)
+        self.dock.setWidget(body)
+        main.addDockWidget(QtC.Qt.RightDockWidgetArea, self.dock)
+        try:
+            main.resizeDocks([self.dock], [PANEL_WIDTH], QtC.Qt.Horizontal)
+        except Exception:
+            pass
+
+        self.timer = QtC.QTimer(self.dock)
+        self.timer.timeout.connect(self._tick)
+        self.btn_start.clicked.connect(self.start)
+        self.btn_stop.clicked.connect(self.stop)
+        self.btn_reset.clicked.connect(self.reset_assembly)
+        self.btn_recompute.clicked.connect(self.recompute)
+        self.dock.show()
+
+    # ---- helpers
+    def _pump(self):
+        try:
+            self.QtW.QApplication.processEvents()
+        except Exception:
+            pass
+
+    def _show_count(self, v, cyc=None):
+        self.lbl_count.setText("count: %d  (%s)%s" % (v, format(v, "04b"), "   cycle %d" % cyc if cyc else ""))
+
+    def _set_busy(self, flag):
+        self.busy = flag
+        for w_ in (self.btn_start, self.btn_reset, self.btn_recompute, self.spin):
+            w_.setEnabled(not flag)
+        self._pump()
+
+    def _hook(self, n, text, cnt):
+        if n % 6 == 0 or n == 1:
+            self.bar.setValue(min(99, int(100.0 * n / (self.spin.value() * FRAMES_PER_CYCLE))))
+            self.lbl_status.setText("computing: %s" % text)
+            self._show_count(cnt)
+            self._pump()
+        return not self.stop_flag
+
+    # ---- actions
+    def compute(self, cycles):
+        self._set_busy(True)
+        self.stop_flag = False
+        try:
+            t = time.time()
+            w, frames, counts = run_counter(cycles, hook=self._hook)
+        except Exception as e:
+            self.lbl_result.setText("<b>%s</b>" % e)
+            self._set_busy(False)
+            return False
+        self._set_busy(False)
+        if self.stop_flag:
+            self.lbl_status.setText("computation stopped")
+            self.bar.setValue(0)
+            return False
+        self.world, self.frames = w, frames
+        self.computed = len(counts)
+        _LAST.update(world=w, frames=frames, counts=counts)
+        ok = self.computed == cycles
+        self.bar.setValue(100)
+        self.lbl_result.setText("counts after each cycle: %s%s" % (counts, "" if ok else "<br><b>stopped early (jam, see Report view)</b>"))
+        self.lbl_status.setText("computed %d cycles in %d s" % (self.computed, time.time() - t))
+        return self.computed > 0
+
+    def start(self):
+        if self.busy:
+            return
+        n = self.spin.value()
+        if self.computed < n:
+            if not self.compute(n):
+                return
+        n = min(n, self.computed)
+        last = max(i for i, f in enumerate(self.frames) if _cycle_of(f[0]) <= n)
+        self.play_frames = self.frames[:last + 1]
+        self.idx = 0
+        self.warned = False
+        try:
+            doc = _doc()
+            if SUPPRESS_JOINTS:
+                suppress_joints(doc, True)
+        except Exception as e:
+            self.lbl_result.setText("<b>%s</b>" % e)
+            return
+        self.timer.setInterval(self.spin_ms.value())
+        self.timer.start()
+        self.lbl_status.setText("playing")
+
+    def _tick(self):
+        if self.idx >= len(self.play_frames):
+            self.timer.stop()
+            self.lbl_status.setText("done")
+            return
+        text, off, anim = self.play_frames[self.idx]
+        self.idx += 1
+        try:
+            doc = _doc()
+            missing = set()
+            apply_offsets(doc, self.world, off, missing)
+            apply_anim(doc, anim)
+            Gui.updateGui()
+            if missing and not self.warned:
+                self.warned = True
+                self.lbl_result.setText("<b>objects not found in the open document:</b> %s" % ", ".join(sorted(missing)[:12]))
+        except Exception as e:
+            self.timer.stop()
+            self.lbl_result.setText("<b>%s</b>" % e)
+            return
+        self._show_count(anim.get("count", 0), _cycle_of(text))
+        self.lbl_status.setText(text)
+
+    def stop(self):
+        self.stop_flag = True
+        self.timer.stop()
+        if not self.busy:
+            self.lbl_status.setText("stopped")
+
+    def recompute(self):
+        if self.busy:
+            return
+        self.timer.stop()
+        self.frames, self.computed = [], 0
+        self.start()
+
+    def reset_assembly(self):
+        self.timer.stop()
+        try:
+            w = self.world or get_world()
+            apply_offsets(_doc(), w, np.zeros_like(w.OFF))
+            apply_anim(_doc(), {"wheel": 0.0, "reg": 0.0})
+            suppress_joints(_doc(), False)
+            Gui.updateGui()
+        except Exception as e:
+            self.lbl_result.setText("<b>%s</b>" % e)
+            return
+        self.lbl_status.setText("assembly reset")
+        self.lbl_count.setText("count: -")
+
+
+def z1_counter_panel():
+    """Open (or re-open) the control panel."""
+    _PANEL["panel"] = CounterPanel()
+    return _PANEL["panel"]
+
+
+try:
+    import __main__
+    for _n, _f in (("reset", reset), ("main", main), ("run_counter", run_counter), ("z1_counter_panel", z1_counter_panel),
+                   ("replay_again", replay_again), ("apply_offsets", apply_offsets)):
+        setattr(__main__, _n, _f)
+except Exception as _e:
+    log("could not export commands to the console: %s" % _e)
+
+if AUTORUN:
+    main()
+elif OPEN_PANEL and App is not None and Gui is not None:
+    try:
+        z1_counter_panel()
+    except Exception as _e:
+        log("could not open the panel: %s" % _e)
