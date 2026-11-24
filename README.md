@@ -114,7 +114,8 @@ The movement from the pulse groove turns a lever. The lever moves the register p
 
 The video shows the final assembly from bottom to top.
 
-![Counter Assembly](https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/counter_assy.mp4")
+[![Counter Assembly](https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/counter_design.png)]
+(https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/counter_assy.mp4)
 
 
 ### Simulating the assembly in FreeCAD
@@ -123,8 +124,8 @@ FreeCAD's Assembly workbench joints cannot represent pins sliding in cut-outs, s
 
 To use it: run the macro, press **Recompute**, then press **Start**. To repeat the simulation, press **Start** again.
 
-<video controls src="https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/macro_execution.mp4" title="docs/assets/counter/macro_execution.mp4"></video></video>
-
+[![Macro Execution](docs/assets/counter_design.png)]
+(https://github.com/StefansAI/Zuse-Z1-Explorations/blob/main/docs/assets/counter/macro_execution.mp4)
 
 And finally, the 3D-printed version in action:
 
