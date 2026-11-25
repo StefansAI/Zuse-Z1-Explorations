@@ -19,6 +19,15 @@
   - [Final design](#final-design)
   - [Simulating the assembly in FreeCAD](#simulating-the-assembly-in-freecad)
 - [4-bit adder](#4-bit-adder)
+  - [From counter to adder](#from-counter-to-adder)
+  - [Keeping long pins upright: rotating arms](#keeping-long-pins-upright-rotating-arms)
+  - [Stack-up and basement](#stack-up-and-basement)
+  - [Guide rings and lid screws](#guide-rings-and-lid-screws)
+  - [The full assembly and its inputs](#the-full-assembly-and-its-inputs)
+  - [Anticipating carry](#anticipating-carry)
+  - [Following the event chains](#following-the-event-chains)
+  - [Simulating the assembly in FreeCAD](#simulating-the-adder-in-freecad)
+  - [Design iterations and tolerances](#design-iterations-and-tolerances)
 
 ## Short introduction
 
@@ -135,13 +144,119 @@ And finally, the 3D-printed version in action:
 <p align="center">
   <img src="docs/assets/counter/counter_final.gif" alt="Final 3D printed version" width="600" />
 </p>
+<br><br>
 
 ## 4-bit adder
 
-<!-- TODO: this section is a placeholder. The notes below are draft material from the design work. -->
+### From counter to adder
 
-*Work in progress.* The adder follows the same design principles as the counter: sheets with cut-outs, movable pins guided by pockets and lids, and a wheel that drives the clock phases. Notes for this section:
+The adder is much more challenging than the counter. It is organized in four vertical, independent levels, with pins communicating through them. Here are two screenshots of the simulator:
 
-- Pins and sheets are stacked in several levels. I shortened the distance between the levels and the pin lengths to reduce mechanical problems.
-- Spacers keep the sheets of neighboring levels apart, and additional spacers on the top level keep parts from falling off.
-- The macro also simulates the adder, so any 4-bit sum can be tried out before printing.
+<p align="center">
+  <img src="docs/assets/adder/adder_simulator_top.png" alt="Adder in the simulator, top view" width="600" />
+</p>
+
+<p align="center">
+  <img src="docs/assets/adder/adder_simulator.png" alt="Adder in the simulator, side view" width="600" />
+</p>
+
+The initial design followed the counter design, but in a 3D-printed version the much longer pins through all levels started to bend and tilt. The long pins therefore had to be replaced with carbon fiber tubes. The fixed pins are simply carbon fiber tubes cut to the correct length for all levels. The moving pins needed a mechanism that holds them upright but still allows a linear movement. Fortunately, these pins only move in either x or y direction and don't need both degrees of freedom.
+
+### Keeping long pins upright: rotating arms
+
+The solution is a rotating arm held in place below the base plate, which approximates the linear motion with a small arc. An arm of 25 mm length causes an error of only about 0.2 mm over a +/-3 mm movement compared to a perfectly linear motion. The carbon fiber tubes are glued into these rotating arms and stick up through all levels.
+
+### Stack-up and basement
+
+This gives the following stack-up:
+
+<p align="center">
+  <img src="docs/assets/adder/adder_stackup.png" alt="Adder stack-up" width="400" />
+</p>
+
+Here is the "basement" arrangement of the rotating arms:
+
+<p align="center">
+  <img src="docs/assets/adder/adder_basement.png" alt="Basement with the rotating arms" />
+</p>
+
+Not all long moving pins could be realized with rotating arms, because there is not enough room for all of them. Only one 4-level pin is left, and it is one of the clock pins. It is the second pin for the same clock phase, and is pushed or pulled at several levels. There are also two 3-level pins, one for carry-in and one for carry-out, which are still not solved well. Finally, there are a few 2-level pins for input and output at the top levels.
+
+### Guide rings and lid screws
+
+The 2-level pins received additional guide rings (`pin_base_loose`) in the AG plate. They look like the pin bases of the counter, run in pockets, and move together with their pin. They are meant to help against tilting.
+
+To keep the lids of the base plates from lifting, which would let the pins bend, screw holes were added around all pin base pockets. Tiny screws hold the lids down. The picture shows the base plate, pins and lid with screw holes:
+
+<p align="center">
+  <img src="docs/assets/adder/adder_base.png" alt="Base plate, pins and lid with screw holes" />
+</p>
+
+### The full assembly and its inputs
+
+The full assembly looks like this:
+
+<p align="center">
+  <img src="docs/assets/adder/adder_full_assy.png" alt="Full adder assembly" />
+</p>
+
+As in the counter, there is a clock wheel on the right side that creates the two clock phases through the sheets "I+III" and "II+IV". The top looks a bit different from the simulator. The simulator only has checkboxes as inputs, but the 3D design needs a physical way to enter the values. The blue parts labeled "Ai" can be shifted towards the "AP" part to set the A-input bits to logic 1. The small sliders below can be shifted to the right to set the B-bits to logic 1. The bit order is printed on the black top parts.
+
+The complexity of the adder shows in the front view:
+
+<p align="center">
+  <img src="docs/assets/adder/adder_front_view.png" alt="Front view of the adder" />
+</p>
+
+You can clearly see the basement with the arms and all four levels, each with its plates and lids housing the level-specific pins. The levels are densely packed with sheets. The amazing thing about this view is that it shows just a tiny fraction of the whole Z1, a machine Konrad Zuse designed and built in his parents' apartment in Berlin in the 1930s.
+
+### Anticipating carry
+
+Zuse could have built a simple adder that processes one bit per clock, which would need N clocks for N bits and would have been much easier. Instead he made it all work within one clock cycle: phase I inputs A, phase II inputs B, and the result appears in phase IV.
+
+In an electronic adder made of logic gates, each gate has a propagation delay, and the clock period just has to be long enough for the longest path. That path is the carry: each carry from a lower bit can influence the next bit, which can then produce a carry for the one after it, and so on.
+
+The mechanical adder has no such chain of gate delays. All logic has to be evaluated within the available clock phases. The paper [Architecture and Simulation of the Z1 Computer](https://zuse-z1.zib.de/) gives a hint on how this works (page 15):
+
+<p align="center">
+  <img src="docs/assets/adder/anticipating_carry.png" alt="Anticipating carry" />
+</p>
+
+> Konrad Zuse used this so-called "anticipating carriage" in all his machines. Instead of propagating a carry through the different binary powers sequentially, the carry for all positions can be set in one step.  The example above serves to illustrate the procedure. The first XOR is the partial result of the sum of the two registers without considering carriages. The AND computes the generation of carry bits: they are transported to the next bit to the left, but are further transported to the next binary position as long as there is a one in the result of the previous XOR computation. In the example, one carry is generated at the bit 𝑏0 and is propagated to the bits 𝑏3 , 𝑏2, and 𝑏1. All carries are finally XORed with the result of the first XOR. A sequence of consecutive 1's from the first XOR operation operates like a kind of bandwagon for propagating AND-generated carries until the chain of 1's breaks.
+
+
+### Following the event chains
+
+Looking at the sheets, it is not easy to follow everything that happens in this design. In Chapter 10, "Observations from the 3D Simulation Application", of the [Z1 Adder Description](docs/adder_description.md) I tried to follow and describe the event chains for different inputs as well as I could.
+
+### Simulating the adder in FreeCAD
+
+Claude also helped to create a macro that simulates the adder design in FreeCAD. It can be used to check all movements by hiding or showing parts while the computed cycle is played back. After the inputs are set and the simulation is computed, the wheel turns at a constant speed and all sheets and pins follow. Two examples:
+
+A = 1, B = 1, carry-in = 0 → 1 + 1 + 0 = 2 (00010)
+
+<p align="center">
+  <img src="docs/assets/adder/adder_macro_execution_1.gif" alt="Adder simulation 1 + 1" />
+</p>
+
+A = 5, B = 10, carry-in = 1 → 5 + 10 + 1 = 16 (10000)
+
+<p align="center">
+  <img src="docs/assets/adder/adder_macro_execution_2.gif" alt="Adder simulation 5 + 10 + 1" />
+</p>
+
+### Design iterations and tolerances
+
+The adder design went through several iterations. After the initial designs, when switching to carbon fiber tubes, a parameter table was introduced that defines common values for all parts instead of individual fixed values in each part. The table makes it easy to adapt the design to slightly different values. However, FreeCAD likes to move many of the slots in the sketches when the pin diameter is changed, so each sketch has to be checked after such a change.
+
+<p align="center">
+  <img src="docs/assets/adder/adder_parms.png" alt="Parameter table of the adder" />
+</p>
+
+The [carbon fiber tubes](https://www.amazon.com/s?k=Carbon+Fiber+Tubes+4mm+x+2mm+x+430mm+5PC+Pultrusion+Carbon+Fiber+Pipes+for+Quadcopter+Multicoptor+Frame+Body+Landing+Gear+3D+Printer&i=industrial&crid=2HYF6LAOW9MCH&sprefix=carbon+fiber+tubes+4mm+x+2mm+x+430mm+5pc+pultrusion+carbon+fiber+pipes+for+quadcopter+multicoptor+frame+body+landing+gear+3d+printer%2Cindustrial%2C170&ref=nb_sb_noss_1) have an outer diameter of 4 mm, but in test prints a design size of 4.1 mm for pins and holes fits best. This is probably related to the accuracy of the printer.
+
+The clearance (margin) was originally set to 0.1 mm. Claude's tolerance calculation over the whole stack-up showed that only about 80% of the intended movement would remain, so the margin was reduced, which brought it up to about 90%. The fit is tight, but so far there has been no downside in the 3D-printed assembly.
+
+## TODO
+
+- Print the latest parts and take pictures and videos.

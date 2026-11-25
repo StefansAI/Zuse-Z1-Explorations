@@ -1,0 +1,88 @@
+# -*- coding: utf-8 -*-
+# Assembly order playback for FreeCAD 1.1: hides all parts of the assembly, then shows them one by one
+# in assembly (tree) order with a wait time in between, so the build order can be screen-recorded.
+#
+# Run with the assembly document open. Settings are the constants below; the camera/view is not touched.
+# Tip: start your screen recorder first, then run the macro.
+
+import time
+import FreeCAD as App
+import FreeCADGui as Gui
+from PySide import QtCore
+
+WAIT_MS = 250            # default wait between parts, in milliseconds
+INITIAL_WAIT_MS = 3000   # wait with the starting scene (empty for normal order, complete for REVERSE) before the first part
+REVERSE = False          # True: play the order backwards (hide parts from the last to the first)
+SKIP_TYPES = ("Assembly::JointGroup", "Assembly::ViewGroup", "App::Origin", "App::FeaturePython",
+              "App::DocumentObjectGroup")
+
+
+def _assembly(doc):
+    for o in doc.Objects:
+        if o.TypeId == "Assembly::AssemblyObject":
+            return o
+    return None
+
+
+def part_list(doc):
+    """Parts in tree order (children of the assembly), falling back to all links in the document."""
+    asm = _assembly(doc)
+    if asm is not None:
+        items = [o for o in asm.Group if o.TypeId not in SKIP_TYPES and hasattr(o, "Visibility")]
+        if items:
+            return items
+    return [o for o in doc.Objects if o.TypeId == "App::Link"]
+
+
+def _wait(ms):
+    """Wait without freezing the GUI (keeps the 3D view repainting for the recorder)."""
+    loop = QtCore.QEventLoop()
+    QtCore.QTimer.singleShot(int(ms), loop.quit)
+    (loop.exec if hasattr(loop, "exec") else loop.exec_)()
+
+
+def main():
+    doc = App.ActiveDocument
+    if doc is None:
+        App.Console.PrintError("No active document\n")
+        return
+    parts = part_list(doc)
+    if not parts:
+        App.Console.PrintError("No parts found\n")
+        return
+    wait, reverse = WAIT_MS, REVERSE
+    original = [(p, p.Visibility) for p in parts]
+    seq = list(reversed(parts)) if reverse else list(parts)
+    if reverse:                    # start from the complete assembly
+        for p in parts:
+            p.Visibility = True
+    App.Console.PrintMessage("Assembly order: %d parts, %d ms between parts\n" % (len(seq), wait))
+    try:
+        if not reverse:
+            for p in parts:
+                p.Visibility = False
+            Gui.updateGui()
+            _wait(INITIAL_WAIT_MS)
+            for i, p in enumerate(seq, 1):
+                p.Visibility = True
+                Gui.updateGui()
+                App.Console.PrintMessage("%3d/%d  %s\n" % (i, len(seq), p.Label))
+                _wait(wait)
+        else:                      # all visible now; hide one by one from the last part
+            Gui.updateGui()
+            _wait(INITIAL_WAIT_MS)
+            for i, p in enumerate(seq, 1):
+                p.Visibility = False
+                Gui.updateGui()
+                App.Console.PrintMessage("%3d/%d  %s\n" % (i, len(seq), p.Label))
+                _wait(wait)
+    except Exception as e:
+        App.Console.PrintError("Stopped: %s\n" % e)
+        for p, v in original:
+            p.Visibility = v
+        raise
+    if not reverse:
+        App.Console.PrintMessage("Done: all parts visible.\n")
+
+
+main()
