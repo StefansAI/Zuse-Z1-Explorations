@@ -3,9 +3,9 @@
 <p align="center">
   <img src="docs/assets/German_Museum_of_Technology,_Berlin_2017_024.jpg" alt="The Zuse Z1 at the German Museum of Technology, Berlin" width="700" />
 </p>
-Picture: Working Z1 replica built by Konrad Zuse in the 1980s as it is showcased in the "German Museum of Technology" in Berlin.
-<br><br><br>
-This repository provides 3D-printable, FreeCAD-designed mechanical models of two small parts of Konrad Zuse's Z1: a **4-bit binary counter** and a **4-bit binary adder**.
+Picture: Working Z1 replica built by Konrad Zuse in the 1980s as it is showcased in the "German Museum of Technology" in Berlin.<br><br><br>
+
+This repository provides 3D-printable, FreeCAD-designed mechanical models of two small parts of Konrad Zuse's Z1: a **4-bit binary counter** and a **4-bit binary adder**. <br>
 
 ## Contents
 
